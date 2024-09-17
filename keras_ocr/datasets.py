@@ -422,15 +422,9 @@ def get_detector_image_generator(
 
 
 def get_recognizer_image_generator(
-    labels: List[Tuple[str, np.ndarray, str]],  # List of (filepath, box, label) tuples
-    height: int,  # Height of the images to return
-    width: int,  # Width of the images to return
-    alphabet: str,  # The alphabet which limits the characters returned
-    augmenter: Optional[Callable[[np.ndarray], np.ndarray]] = None,  # Augmenter to apply to images
-    shuffle: bool = True  # Whether to shuffle the dataset on each iteration
+    labels, height, width, alphabet, augmenter=None, shuffle=True
 ):
-    """
-    Generate augmented (image, text) tuples from a list
+    """Generate augmented (image, text) tuples from a list
     of (filepath, box, label) tuples.
 
     Args:
@@ -448,37 +442,29 @@ def get_recognizer_image_generator(
         print(
             f"{n_with_illegal_characters} / {len(labels)} instances have illegal characters."
         )
-    
     labels = labels.copy()
-    
     for index in itertools.cycle(range(len(labels))):
         if index == 0 and shuffle:
             random.shuffle(labels)
-        
         filepath, box, text = labels[index]
-        cval = np.random.randint(low=0, high=255, size=3).astype("uint8")
-        
+        cval = typing.cast(
+            int, np.random.randint(low=0, high=255, size=3).astype("uint8")
+        )
         if box is not None:
             image = tools.warpBox(
                 image=tools.read(filepath),
                 box=box.astype("float32"),
                 target_height=height,
                 target_width=width,
-                cval=cval
+                cval=cval,
             )
         else:
             image = tools.read_and_fit(
-                filepath_or_array=filepath, 
-                width=width, 
-                height=height, 
-                cval=cval
+                filepath_or_array=filepath, width=width, height=height, cval=cval
             )
-        
-        text = "".join(c for c in text if c in alphabet)
+        text = "".join([c for c in text if c in alphabet])
         if not text:
             continue
-        
         if augmenter:
-            image = augmenter(image)
-        
-        yield image, text
+            image = augmenter.augment_image(image)
+        yield (image, text)
