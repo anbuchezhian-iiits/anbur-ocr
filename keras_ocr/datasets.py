@@ -1,32 +1,21 @@
-# pylint: disable=line-too-long,invalid-name,too-many-arguments,too-many-locals
 import concurrent.futures
 import itertools
 import warnings
-import typing
-import zipfile
-import random
-import glob
 import json
 import os
-
-import tqdm
-import imgaug
-import PIL.Image
+import zipfile
+import glob
+import random
 import numpy as np
+import PIL.Image
+from typing import List, Tuple, Optional, Callable
 
 from . import tools
 
-
-def _read_born_digital_labels_file(labels_filepath, image_folder):
-    """Read a labels file and return (filepath, label) tuples.
-
-    Args:
-        labels_filepath: Path to labels file
-        image_folder: Path to folder containing images
-    """
+def _read_born_digital_labels_file(labels_filepath: str, image_folder: str) -> List[Tuple[str, Optional[np.ndarray], str]]:
     with open(labels_filepath, encoding="utf-8-sig") as f:
         labels_raw = [l.strip().split(",") for l in f.readlines()]
-        labels = [
+        return [
             (
                 os.path.join(image_folder, segments[0]),
                 None,
@@ -34,36 +23,18 @@ def _read_born_digital_labels_file(labels_filepath, image_folder):
             )
             for segments in labels_raw
         ]
-    return labels
 
 
 def get_cocotext_recognizer_dataset(
-    split="train",
-    cache_dir=None,
-    limit=None,
-    legible_only=False,
-    english_only=False,
-    return_raw_labels=False,
-):
-    """Get a list of (filepath, box, word) tuples from the
-    COCO-Text dataset.
-
-    Args:
-        split: Which split to get (train, val, or trainval)
-        limit: Limit the number of files included in the download
-        cache_dir: The directory in which to cache the file. The default is
-            `~/.keras-ocr`.
-        return_raw_labels: Whether to return the raw labels object
-
-    Returns:
-        A recognition dataset as a list of (filepath, box, word) tuples.
-        If return_raw_labels is True, you will also get a (labels, images_dir)
-        tuple containing the raw COCO data and the directory in which you
-        can find the images.
-    """
+    split: str = "train",
+    cache_dir: Optional[str] = None,
+    limit: Optional[int] = None,
+    legible_only: bool = False,
+    english_only: bool = False,
+    return_raw_labels: bool = False
+) -> List[Tuple[str, np.ndarray, str]]:
     assert split in ["train", "val", "trainval"], f"Unsupported split: {split}"
-    if cache_dir is None:
-        cache_dir = tools.get_default_cache_dir()
+    cache_dir = cache_dir or tools.get_default_cache_dir()
     main_dir = os.path.join(cache_dir, "coco-text")
     images_dir = os.path.join(main_dir, "images")
     labels_zip = tools.download_and_verify(
@@ -74,21 +45,17 @@ def get_cocotext_recognizer_dataset(
     with zipfile.ZipFile(labels_zip) as z:
         with z.open("cocotext.v2.json") as f:
             labels = json.loads(f.read())
-    selected_ids = [
-        cocoid for cocoid, data in labels["imgs"].items() if data["set"] in split
-    ]
+
+    selected_ids = [cocoid for cocoid, data in labels["imgs"].items() if data["set"] in split]
     if limit:
         flatten = lambda l: [item for sublist in l for item in sublist]
         selected_ids = selected_ids[:limit]
-        labels["imgToAnns"] = {
-            k: v for k, v in labels["imgToAnns"].items() if k in selected_ids
-        }
+        labels["imgToAnns"] = {k: v for k, v in labels["imgToAnns"].items() if k in selected_ids}
         labels["imgs"] = {k: v for k, v in labels["imgs"].items() if k in selected_ids}
         anns = set(flatten(list(labels.values())))
         labels["anns"] = {k: v for k, v in labels["anns"].items() if k in anns}
-    selected_filenames = [
-        labels["imgs"][cocoid]["file_name"] for cocoid in selected_ids
-    ]
+
+    selected_filenames = [labels["imgs"][cocoid]["file_name"] for cocoid in selected_ids]
     with concurrent.futures.ThreadPoolExecutor() as executor:
         for future in tqdm.tqdm(
             concurrent.futures.as_completed(
@@ -106,11 +73,10 @@ def get_cocotext_recognizer_dataset(
             desc="Downloading images",
         ):
             _ = future.result()
+
     dataset = []
     for selected_id in selected_ids:
-        filepath = os.path.join(
-            images_dir, selected_filenames[selected_ids.index(selected_id)]
-        )
+        filepath = os.path.join(images_dir, selected_filenames[selected_ids.index(selected_id)])
         for annIdx in labels["imgToAnns"][selected_id]:
             ann = labels["anns"][str(annIdx)]
             if english_only and ann["language"] != "english":
@@ -120,9 +86,7 @@ def get_cocotext_recognizer_dataset(
             dataset.append(
                 (filepath, np.array(ann["mask"]).reshape(-1, 2), ann["utf8_string"])
             )
-    if return_raw_labels:
-        return dataset, (labels, images_dir)
-    return dataset
+    return (dataset, (labels, images_dir)) if return_raw_labels else dataset
 
 
 def get_born_digital_recognizer_dataset(split="train", cache_dir=None):
@@ -422,9 +386,15 @@ def get_detector_image_generator(
 
 
 def get_recognizer_image_generator(
-    labels, height, width, alphabet, augmenter=None, shuffle=True
+    labels: List[Tuple[str, np.ndarray, str]],  # List of (filepath, box, label) tuples
+    height: int,  # Height of the images to return
+    width: int,  # Width of the images to return
+    alphabet: str,  # The alphabet which limits the characters returned
+    augmenter: Optional[Callable[[np.ndarray], np.ndarray]] = None,  # Augmenter to apply to images
+    shuffle: bool = True  # Whether to shuffle the dataset on each iteration
 ):
-    """Generate augmented (image, text) tuples from a list
+    """
+    Generate augmented (image, text) tuples from a list
     of (filepath, box, label) tuples.
 
     Args:
@@ -442,29 +412,37 @@ def get_recognizer_image_generator(
         print(
             f"{n_with_illegal_characters} / {len(labels)} instances have illegal characters."
         )
+    
     labels = labels.copy()
+    
     for index in itertools.cycle(range(len(labels))):
         if index == 0 and shuffle:
             random.shuffle(labels)
+        
         filepath, box, text = labels[index]
-        cval = typing.cast(
-            int, np.random.randint(low=0, high=255, size=3).astype("uint8")
-        )
+        cval = np.random.randint(low=0, high=255, size=3).astype("uint8")
+        
         if box is not None:
             image = tools.warpBox(
                 image=tools.read(filepath),
                 box=box.astype("float32"),
                 target_height=height,
                 target_width=width,
-                cval=cval,
+                cval=cval
             )
         else:
             image = tools.read_and_fit(
-                filepath_or_array=filepath, width=width, height=height, cval=cval
+                filepath_or_array=filepath, 
+                width=width, 
+                height=height, 
+                cval=cval
             )
-        text = "".join([c for c in text if c in alphabet])
+        
+        text = "".join(c for c in text if c in alphabet)
         if not text:
             continue
+        
         if augmenter:
-            image = augmenter.augment_image(image)
-        yield (image, text)
+            image = augmenter(image)
+        
+        yield image, text
